@@ -16,11 +16,12 @@ bulan = st.sidebar.text_input("Bulan (MM)", value="04")
 tahun = st.sidebar.text_input("Tahun (YYYY)", value="2026")
 
 def clean_currency(value):
-    if pd.isna(value) or value == "":
+    if pd.isna(value) or str(value).strip() == "":
         return 0.0
     if isinstance(value, (int, float)):
         return float(value)
     try:
+        # Bersihkan format mata uang umum Indonesia
         text = str(value).replace('Rp', '').replace(' ', '')
         if ',' in text and '.' in text:
             text = text.replace('.', '').replace(',', '.')
@@ -53,14 +54,13 @@ if uploaded_files:
                     st.error(f"❌ Tidak menemukan kolom NIP di file: {file.name}")
                     continue
 
-                # 2. Baca ulang file dari baris header[cite: 1]
+                # 2. Baca ulang file dari baris header[cite: 1, 2]
                 df = pd.read_excel(file, skiprows=header_row)
                 
-                # 3. Tangani Merge Cells pada Header
-                # Menggunakan .ffill() untuk Pandas versi terbaru
+                # 3. Tangani Merge Cells pada Header (Penting untuk file Rekapitulasi)
                 df.columns = pd.Series(df.columns).ffill().str.strip()
 
-                # 4. Cari kolom NIP dan Nama secara eksplisit
+                # 4. Cari kolom NIP dan Nama secara spesifik
                 col_nip = None
                 col_nama = None
                 for c in df.columns:
@@ -74,29 +74,28 @@ if uploaded_files:
                     st.error(f"❌ Kolom NIP atau Nama tidak ditemukan di: {file.name}")
                     continue
 
-                # 5. Ekstraksi Data
+                # 5. Ekstraksi dan Pembersihan Data
                 df_clean = pd.DataFrame()
                 df_clean['KODE_SATKER'] = [satker] * len(df)
                 df_clean['NIP'] = df[col_nip].astype(str).str.replace(r'\D', '', regex=True)
                 df_clean['NAMA_PEGAWAI'] = df[col_nama]
                 
-                # Penanganan Kolom Keuangan (Bruto, Potongan, Bersih)[cite: 2]
-                # Loop untuk setiap target kolom yang kita inginkan
+                # Penanganan Kolom Keuangan (Bruto, Potongan, Bersih)
                 for target, keywords in [('BRUTO', 'BRUTO'), ('POTONGAN', 'POTONGAN'), ('BERSIH', 'BERSIH')]:
-                    # Cari semua kolom yang mengandung kata kunci tersebut
+                    # Cari kolom yang mengandung kata kunci
                     matched_cols = [c for c in df.columns if keywords in str(c).upper()]
                     
                     if len(matched_cols) > 0:
-                        # Inisialisasi kolom dengan angka nol
+                        # Inisialisasi sebagai angka nol
                         temp_series = pd.Series(0.0, index=df.index)
                         for m_col in matched_cols:
-                            # Bersihkan dan jumlahkan setiap kolom yang cocok
+                            # Bersihkan dan jumlahkan otomatis (menangani kolom potongan yang terbagi-bagi)
                             temp_series += df[m_col].apply(clean_currency)
                         df_clean[target] = temp_series
                     else:
                         df_clean[target] = 0.0
 
-                # 6. Validasi Data: Ambil hanya yang memiliki NIP valid (>= 9 digit)[cite: 1]
+                # 6. Validasi Baris: Hanya ambil yang NIP-nya valid (min 9 digit)[cite: 1]
                 df_clean = df_clean[df_clean['NIP'].str.len() >= 9].copy()
                 
                 df_clean['BULAN'] = bulan
@@ -114,13 +113,13 @@ if uploaded_files:
             st.subheader("📊 Preview Data Gabungan")
             st.dataframe(final_df, use_container_width=True)
             
-            # Tampilkan statistik akhir
+            # Tampilkan statistik akhir dengan penjumlahan yang sudah bersih
             c1, c2, c3 = st.columns(3)
             c1.metric("Total Pegawai", f"{len(final_df)} orang")
             c2.metric("Total Bruto", f"Rp {final_df['BRUTO'].sum():,.2f}")
             c3.metric("Total Bersih", f"Rp {final_df['BERSIH'].sum():,.2f}")
 
-            # Tombol Download
+            # Persiapkan file untuk didownload
             output = io.BytesIO()
             with pd.ExcelWriter(output, engine='openpyxl') as writer:
                 final_df.to_excel(writer, index=False, sheet_name='ADK_GABUNGAN')
@@ -129,6 +128,6 @@ if uploaded_files:
             st.download_button(
                 label="📥 Download Hasil Gabungan (Excel)",
                 data=output.getvalue(),
-                file_name=f"ADK_GABUNGAN_{bulan}_{tahun}.xlsx",
+                file_name=f"ADK_TUKIN_GABUNGAN_{bulan}_{tahun}.xlsx",
                 mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
             )
