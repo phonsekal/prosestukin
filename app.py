@@ -6,32 +6,42 @@ import re
 # Konfigurasi Halaman
 st.set_page_config(page_title="Pengolah Tukin ADK", layout="wide", page_icon="💰")
 
-# Tampilan Header
 st.title("💰 Penggabung Data Tukin ke Format ADK")
-st.markdown("""
-Aplikasi ini otomatis mendeteksi baris header, menangani *merge cells*, dan membersihkan format mata uang.
-Sudah diperbarui untuk mendukung **Pandas 3.0+**.
-""")
+st.markdown("Versi Perbaikan: Penanganan angka murni dan format mata uang campuran.")
 
-# Sidebar untuk konfigurasi statis
+# Sidebar
 st.sidebar.header("⚙️ Konfigurasi Data")
 satker = st.sidebar.text_input("Kode Satker", value="693266")
 bulan = st.sidebar.text_input("Bulan (MM)", value="04")
 tahun = st.sidebar.text_input("Tahun (YYYY)", value="2026")
 
-# Fungsi Pembersihan Mata Uang
+# FUNGSI PERBAIKAN: Lebih cerdas dalam membedakan angka dan teks
 def clean_currency(value):
     if pd.isna(value) or value == "":
-        return 0
+        return 0.0
+    
+    # Jika sudah berupa angka (int/float), langsung kembalikan nilainya
     if isinstance(value, (int, float)):
         return float(value)
-    clean_str = re.sub(r'[^\d.]', '', str(value).replace(',', ''))
+    
+    # Jika berupa string, bersihkan karakter non-angka kecuali titik desimal
     try:
-        return float(clean_str)
+        # Hapus Rp, spasi, dan titik ribuan (titik yang diikuti 3 angka)
+        text = str(value).replace('Rp', '').replace(' ', '')
+        
+        # Logika Indonesia: jika ada titik dan koma (misal 1.000,00), ubah ke format standar (1000.00)
+        if ',' in text and '.' in text:
+            text = text.replace('.', '').replace(',', '.')
+        elif ',' in text: # Jika hanya koma (misal 1000,00)
+            text = text.replace(',', '.')
+            
+        # Hapus semua karakter kecuali angka dan titik
+        clean_str = re.sub(r'[^\d.]', '', text)
+        
+        return float(clean_str) if clean_str else 0.0
     except:
-        return 0
+        return 0.0
 
-# Upload Multi File
 uploaded_files = st.file_uploader("Pilih file-file Excel sumber", type=["xlsx"], accept_multiple_files=True)
 
 if uploaded_files:
@@ -40,7 +50,7 @@ if uploaded_files:
         
         for file in uploaded_files:
             try:
-                # 1. Baca mentah untuk mencari baris header NIP[cite: 1]
+                # 1. Cari baris header NIP[cite: 1]
                 df_raw = pd.read_excel(file, header=None)
                 header_row = 0
                 for i, row in df_raw.iterrows():
@@ -48,49 +58,51 @@ if uploaded_files:
                         header_row = i
                         break
                 
-                # 2. Baca ulang file dengan baris header yang ditemukan
+                # 2. Baca ulang file
                 df = pd.read_excel(file, skiprows=header_row)
                 
-                # 3. Menangani Merge Cells pada Header (PERBAIKAN PANDAS 3.0)
-                # Menggunakan .ffill() sebagai pengganti fillna(method='ffill')
+                # 3. Tangani Merge Cells Header
                 df.columns = pd.Series(df.columns).ffill().str.strip()
 
-                # 4. Cari kolom NIP dan Nama secara fleksibel
+                # 4. Cari kolom NIP dan Nama
                 col_nip = next((c for c in df.columns if 'NIP' in str(c).upper()), None)
                 col_nama = next((c for c in df.columns if 'NAMA' in str(c).upper()), None)
 
                 if not col_nip or not col_nama:
-                    st.error(f"❌ Kolom NIP/Nama tidak ditemukan di file: {file.name}")
+                    st.error(f"❌ Kolom NIP/Nama tidak ditemukan di: {file.name}")
                     continue
 
-                # 5. Ekstraksi Data Utama
+                # 5. Ekstraksi Data
                 df_clean = pd.DataFrame()
                 df_clean['KODE_SATKER'] = [satker] * len(df)
                 df_clean['NIP'] = df[col_nip].astype(str).str.replace(r'\D', '', regex=True)
                 df_clean['NAMA_PEGAWAI'] = df[col_nama]
                 
-                # Mengambil nilai keuangan
-                df_clean['BRUTO'] = df.filter(like='Bruto').iloc[:, 0] if not df.filter(like='Bruto').empty else df.get('Tunjangan', 0)
-                df_clean['POTONGAN'] = df.filter(like='Potongan').iloc[:, 0] if not df.filter(like='Potongan').empty else 0
-                df_clean['BERSIH'] = df.filter(like='Bersih').iloc[:, 0] if not df.filter(like='Bersih').empty else 0
+                # Mengambil kolom keuangan (Bruto, Potongan, Bersih)
+                # Menggunakan filter agar lebih fleksibel mencari nama kolom
+                for target, keywords in [('BRUTO', 'Bruto'), ('POTONGAN', 'Potongan'), ('BERSIH', 'Bersih')]:
+                    found_col = df.filter(like=keywords).columns
+                    if not found_col.empty:
+                        df_clean[target] = df[found_col[0]]
+                    else:
+                        df_clean[target] = 0.0
 
-                # 6. Pembersihan Data
+                # 6. Pembersihan Nilai Keuangan
                 for col in ['BRUTO', 'POTONGAN', 'BERSIH']:
                     df_clean[col] = df_clean[col].apply(clean_currency)
                 
-                # Validasi NIP (Minimal 9 digit)
+                # Validasi NIP (minimal 9 digit) untuk membuang baris sampah/total[cite: 1]
                 df_clean = df_clean[df_clean['NIP'].str.len() >= 9]
                 
                 df_clean['BULAN'] = bulan
                 df_clean['TAHUN'] = tahun
                 
                 all_data.append(df_clean)
-                st.success(f"✅ Berhasil memproses: {file.name} ({len(df_clean)} baris)")
+                st.success(f"✅ Berhasil: {file.name}")
                 
             except Exception as e:
-                st.error(f"❌ Gagal memproses {file.name}: {str(e)}")
+                st.error(f"❌ Error {file.name}: {str(e)}")
 
-        # 7. Penggabungan & Visualisasi
         if all_data:
             final_df = pd.concat(all_data, ignore_index=True)
             
@@ -101,8 +113,8 @@ if uploaded_files:
             # Statistik
             c1, c2, c3 = st.columns(3)
             c1.metric("Total Pegawai", f"{len(final_df)} orang")
-            c2.metric("Total Bruto", f"Rp {final_df['BRUTO'].sum():,.0f}")
-            c3.metric("Total Bersih", f"Rp {final_df['BERSIH'].sum():,.0f}")
+            c2.metric("Total Bruto", f"Rp {final_df['BRUTO'].sum():,.2f}")
+            c3.metric("Total Bersih", f"Rp {final_df['BERSIH'].sum():,.2f}")
 
             # Download
             output = io.BytesIO()
@@ -113,8 +125,6 @@ if uploaded_files:
             st.download_button(
                 label="📥 Download Hasil Gabungan (Excel)",
                 data=output.getvalue(),
-                file_name=f"ADK_TUKIN_GABUNGAN_{bulan}_{tahun}.xlsx",
+                file_name=f"ADK_GABUNGAN_{bulan}_{tahun}.xlsx",
                 mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
             )
-else:
-    st.info("Silakan pilih file Excel untuk memulai.")
