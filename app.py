@@ -7,7 +7,7 @@ import re
 st.set_page_config(page_title="Master Pembayaran Tukin", layout="wide", page_icon="📑")
 
 st.title("📑 Generator Master Pembayaran Tukin")
-st.markdown("Aplikasi ini menggabungkan data Tukin menjadi satu file **MASTER PEMBAYARAN.xlsx**.")
+st.markdown("Versi Final & Stabil: Penanganan eksplisit untuk kolom ganda dan angka murni.")
 
 # Sidebar
 st.sidebar.header("⚙️ Konfigurasi Data")
@@ -16,7 +16,7 @@ bulan = st.sidebar.text_input("Bulan (MM)", value="04")
 tahun = st.sidebar.text_input("Tahun (YYYY)", value="2026")
 
 def smart_numeric_cleaner(value):
-    """Memastikan angka murni tidak rusak dan teks mata uang dibersihkan."""
+    """Memastikan angka murni (seperti 8757600.0) tetap utuh dan teks mata uang dibersihkan."""
     if pd.isna(value) or str(value).strip() == "":
         return 0.0
     if isinstance(value, (int, float)):
@@ -54,46 +54,53 @@ if uploaded_files:
                     st.error(f"❌ Baris NIP tidak ditemukan di file: {file.name}")
                     continue
 
-                # 2. Baca ulang file dengan header yang benar[cite: 1, 2]
+                # 2. Baca ulang file dengan skiprows yang tepat
                 df = pd.read_excel(file, skiprows=header_row)
                 
-                # 3. Tangani Merge Cells pada Header
+                # 3. Tangani Merge Cells pada Header secara eksplisit
                 df.columns = pd.Series(df.columns).ffill().str.strip()
 
-                # 4. Cari kolom NIP dan Nama secara manual (menghindari error ambiguitas)
-                col_nip, col_nama = None, None
+                # 4. Cari kolom NIP dan Nama secara manual satu per satu
+                col_nip = None
+                col_nama = None
                 for c in df.columns:
-                    if 'NIP' in str(c).upper(): col_nip = c
-                    if 'NAMA' in str(c).upper() and col_nama is None: col_nama = c
+                    c_upper = str(c).upper()
+                    if 'NIP' in c_upper and col_nip is None:
+                        col_nip = c
+                    if 'NAMA' in c_upper and col_nama is None:
+                        col_nama = c
 
                 if col_nip is None or col_nama is None:
-                    st.error(f"❌ Kolom identitas tidak ditemukan di: {file.name}")
+                    st.error(f"❌ Kolom NIP atau Nama tidak ditemukan di: {file.name}")
                     continue
 
-                # 5. Buat DataFrame hasil
+                # 5. Buat DataFrame hasil sementara
                 df_clean = pd.DataFrame()
                 df_clean['KODE_SATKER'] = [satker] * len(df)
                 df_clean['NIP'] = df[col_nip].astype(str).str.replace(r'\D', '', regex=True)
                 df_clean['NAMA_PEGAWAI'] = df[col_nama]
                 
                 # 6. Pembersihan Nilai Keuangan (Bruto, Potongan, Bersih)
-                # Menggunakan list comprehension untuk menghindari error Series Truth Value
+                # Menggunakan logika penjumlahan eksplisit untuk menghindari error 'ambiguous'
                 for target, keywords in [('BRUTO', 'BRUTO'), ('POTONGAN', 'POTONGAN'), ('BERSIH', 'BERSIH')]:
+                    # Cari daftar semua kolom yang mengandung kata kunci tersebut
                     matched_cols = [c for c in df.columns if keywords in str(c).upper()]
                     
+                    # Inisialisasi kolom dengan angka 0.0
+                    temp_sum_series = pd.Series(0.0, index=df.index)
+                    
                     if len(matched_cols) > 0:
-                        # Jumlahkan semua kolom yang cocok (menangani banyak kolom potongan)
-                        temp_sum = pd.Series(0.0, index=df.index)
                         for m_col in matched_cols:
-                            temp_sum += df[m_col].apply(smart_numeric_cleaner)
-                        df_clean[target] = temp_sum
-                    else:
-                        df_clean[target] = 0.0
+                            # Terapkan pembersihan dan jumlahkan (penting jika ada banyak kolom potongan)
+                            temp_sum_series += df[m_col].apply(smart_numeric_cleaner)
+                    
+                    df_clean[target] = temp_sum_series
 
-                # 7. Filter Baris Valid (NIP >= 9 digit)[cite: 1]
+                # 7. Filter Baris Valid (NIP >= 9 digit)
+                # Ini akan otomatis membuang baris judul, baris kosong, dan totalan
                 df_clean = df_clean[df_clean['NIP'].str.len() >= 9].copy()
                 
-                # Paksa tipe data numerik[cite: 2]
+                # Paksa tipe numerik sekali lagi untuk memastikan
                 for col in ['BRUTO', 'POTONGAN', 'BERSIH']:
                     df_clean[col] = pd.to_numeric(df_clean[col], errors='coerce').fillna(0.0)
                 
@@ -113,12 +120,13 @@ if uploaded_files:
             st.subheader("📊 Pratinjau Master Pembayaran")
             st.dataframe(final_df, use_container_width=True)
             
-            # Statistik Akhir[cite: 2]
+            # Statistik (Sekarang aman karena kolom dipastikan float)
             c1, c2, c3 = st.columns(3)
             c1.metric("Total Pegawai", f"{len(final_df)} orang")
-            c2.metric("Total Bruto", f"Rp {final_df['BRUTO'].sum():,.2f}")
-            c3.metric("Total Bersih", f"Rp {final_df['BERSIH'].sum():,.2f}")
+            c2.metric("Total Nilai Bruto", f"Rp {final_df['BRUTO'].sum():,.2f}")
+            c3.metric("Total Nilai Bersih", f"Rp {final_df['BERSIH'].sum():,.2f}")
 
+            # Persiapan file unduhan
             output = io.BytesIO()
             with pd.ExcelWriter(output, engine='openpyxl') as writer:
                 final_df.to_excel(writer, index=False, sheet_name='MASTER_PEMBAYARAN')
