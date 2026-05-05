@@ -9,8 +9,8 @@ st.set_page_config(page_title="Pengolah Tukin ADK", layout="wide", page_icon="�
 # Tampilan Header
 st.title("💰 Penggabung Data Tukin ke Format ADK")
 st.markdown("""
-Aplikasi ini otomatis mendeteksi baris header, menangani *merge cells*, dan membersihkan format mata uang 
-dari file rekap Tukin Anda.
+Aplikasi ini otomatis mendeteksi baris header, menangani *merge cells*, dan membersihkan format mata uang.
+Sudah diperbarui untuk mendukung **Pandas 3.0+**.
 """)
 
 # Sidebar untuk konfigurasi statis
@@ -19,21 +19,12 @@ satker = st.sidebar.text_input("Kode Satker", value="693266")
 bulan = st.sidebar.text_input("Bulan (MM)", value="04")
 tahun = st.sidebar.text_input("Tahun (YYYY)", value="2026")
 
-st.sidebar.markdown("---")
-st.sidebar.info("""
-**Instruksi:**
-1. Upload file Excel sumber (bisa lebih dari satu).
-2. Pastikan file memiliki kolom bertajuk **NIP** dan **Nama**.
-3. Sistem akan otomatis membuang baris judul atau total yang tidak valid.
-""")
-
-# Fungsi Pembersihan Mata Uang (Pencegah TypeError)
+# Fungsi Pembersihan Mata Uang
 def clean_currency(value):
     if pd.isna(value) or value == "":
         return 0
     if isinstance(value, (int, float)):
         return float(value)
-    # Hapus Rp, titik ribuan, koma, dan spasi
     clean_str = re.sub(r'[^\d.]', '', str(value).replace(',', ''))
     try:
         return float(clean_str)
@@ -49,7 +40,7 @@ if uploaded_files:
         
         for file in uploaded_files:
             try:
-                # 1. Baca mentah untuk mencari baris header NIP
+                # 1. Baca mentah untuk mencari baris header NIP[cite: 1]
                 df_raw = pd.read_excel(file, header=None)
                 header_row = 0
                 for i, row in df_raw.iterrows():
@@ -60,8 +51,9 @@ if uploaded_files:
                 # 2. Baca ulang file dengan baris header yang ditemukan
                 df = pd.read_excel(file, skiprows=header_row)
                 
-                # 3. Menangani Merge Cells pada Header (Horizontal)
-                df.columns = pd.Series(df.columns).fillna(method='ffill').str.strip()
+                # 3. Menangani Merge Cells pada Header (PERBAIKAN PANDAS 3.0)
+                # Menggunakan .ffill() sebagai pengganti fillna(method='ffill')
+                df.columns = pd.Series(df.columns).ffill().str.strip()
 
                 # 4. Cari kolom NIP dan Nama secara fleksibel
                 col_nip = next((c for c in df.columns if 'NIP' in str(c).upper()), None)
@@ -77,17 +69,16 @@ if uploaded_files:
                 df_clean['NIP'] = df[col_nip].astype(str).str.replace(r'\D', '', regex=True)
                 df_clean['NAMA_PEGAWAI'] = df[col_nama]
                 
-                # Mengambil nilai keuangan dengan filter nama kolom yang mirip
+                # Mengambil nilai keuangan
                 df_clean['BRUTO'] = df.filter(like='Bruto').iloc[:, 0] if not df.filter(like='Bruto').empty else df.get('Tunjangan', 0)
                 df_clean['POTONGAN'] = df.filter(like='Potongan').iloc[:, 0] if not df.filter(like='Potongan').empty else 0
                 df_clean['BERSIH'] = df.filter(like='Bersih').iloc[:, 0] if not df.filter(like='Bersih').empty else 0
 
-                # 6. Pembersihan Data (Angka & Validasi NIP)
+                # 6. Pembersihan Data
                 for col in ['BRUTO', 'POTONGAN', 'BERSIH']:
                     df_clean[col] = df_clean[col].apply(clean_currency)
                 
-                # Hanya ambil yang NIP-nya valid (minimal 9 digit angka)
-                # Ini akan membuang baris "Total" atau baris kosong secara otomatis
+                # Validasi NIP (Minimal 9 digit)
                 df_clean = df_clean[df_clean['NIP'].str.len() >= 9]
                 
                 df_clean['BULAN'] = bulan
@@ -107,13 +98,13 @@ if uploaded_files:
             st.subheader("📊 Preview Data Gabungan")
             st.dataframe(final_df, use_container_width=True)
             
-            # Statistik (Sekarang aman dari TypeError)
+            # Statistik
             c1, c2, c3 = st.columns(3)
             c1.metric("Total Pegawai", f"{len(final_df)} orang")
             c2.metric("Total Bruto", f"Rp {final_df['BRUTO'].sum():,.0f}")
             c3.metric("Total Bersih", f"Rp {final_df['BERSIH'].sum():,.0f}")
 
-            # Persiapkan file download
+            # Download
             output = io.BytesIO()
             with pd.ExcelWriter(output, engine='openpyxl') as writer:
                 final_df.to_excel(writer, index=False, sheet_name='ADK_GABUNGAN')
@@ -125,7 +116,5 @@ if uploaded_files:
                 file_name=f"ADK_TUKIN_GABUNGAN_{bulan}_{tahun}.xlsx",
                 mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
             )
-        else:
-            st.warning("⚠️ Tidak ada data valid yang bisa digabungkan.")
 else:
     st.info("Silakan pilih file Excel untuk memulai.")
