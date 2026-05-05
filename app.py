@@ -1,140 +1,112 @@
 import streamlit as st
 import pandas as pd
+import numpy as np
 import io
-import re
 
-# Konfigurasi Halaman
-st.set_page_config(page_title="Master Pembayaran Tukin", layout="wide", page_icon="📑")
+st.set_page_config(page_title="Update Master Pembayaran", layout="wide")
 
-st.title("📑 Generator Master Pembayaran Tukin")
-st.markdown("Versi Final & Stabil: Penanganan eksplisit untuk kolom ganda dan angka murni.")
+st.title("📂 Pengolah Data Master Pembayaran")
+st.write("Unggah file Master dan file-file Tukin untuk mengisi Nilai Bruto, Potongan, dan Bersih secara otomatis.")
 
-# Sidebar
-st.sidebar.header("⚙️ Konfigurasi Data")
-satker = st.sidebar.text_input("Kode Satker", value="693266")
-bulan = st.sidebar.text_input("Bulan (MM)", value="04")
-tahun = st.sidebar.text_input("Tahun (YYYY)", value="2026")
+# 1. Upload Files
+col1, col2 = st.columns(2)
 
-def smart_numeric_cleaner(value):
-    """Memastikan angka murni (seperti 8757600.0) tetap utuh dan teks mata uang dibersihkan."""
-    if pd.isna(value) or str(value).strip() == "":
-        return 0.0
-    if isinstance(value, (int, float)):
-        return float(value)
-    try:
-        text = str(value).replace('Rp', '').replace(' ', '')
-        if ',' in text and '.' in text:
-            text = text.replace('.', '').replace(',', '.')
-        elif ',' in text:
-            text = text.replace(',', '.')
-        clean_str = re.sub(r'[^\d.]', '', text)
-        return float(clean_str) if clean_str else 0.0
-    except:
-        return 0.0
+with col1:
+    master_file = st.file_uploader("Unggah MASTER PEMBAYARAN.xlsx", type=["xlsx"])
 
-uploaded_files = st.file_uploader("Upload semua file Tukin sumber", type=["xlsx"], accept_multiple_files=True)
+with col2:
+    source_files = st.file_uploader("Unggah File-File Sumber (Tukin/Rekap)", type=["xlsx"], accept_multiple_files=True)
 
-if uploaded_files:
-    if st.button("🚀 Proses & Buat Master Pembayaran"):
-        all_data = []
+def process_source_file(file):
+    # Baca file, coba temukan header yang mengandung 'NIP'
+    df_raw = pd.read_excel(file, header=None)
+    
+    # Cari baris mana yang mengandung kata 'NIP'
+    header_row_idx = 0
+    for i, row in df_raw.iterrows():
+        if "NIP" in row.values:
+            header_row_idx = i
+            break
+    
+    # Baca ulang dengan header yang benar
+    df = pd.read_excel(file, skiprows=header_row_idx)
+    
+    # Bersihkan nama kolom dari whitespace atau newline
+    df.columns = [str(c).replace('\n', ' ').strip() for c in df.columns]
+    
+    # Identifikasi Kolom
+    # NIP
+    nip_col = [c for c in df.columns if 'NIP' in c][0]
+    
+    # Tunjangan (Bruto) - ambil yang pertama muncul
+    tunjangan_cols = [c for c in df.columns if 'Tunjangan' in c]
+    bruto_col = tunjangan_cols[0] if tunjangan_cols else None
+    
+    # Potongan - semua yang ada kata 'Potongan' (kecuali jika ada 'Total Potongan' agar tidak double count)
+    # Namun sesuai instruksi: "jumlahkan semua kolom yang ada kata potongan"
+    potongan_cols = [c for c in df.columns if 'Potongan' in c and 'Total' not in c]
+    
+    if not bruto_col or not nip_col:
+        return None
+
+    # Konversi ke numerik
+    df[bruto_col] = pd.to_numeric(df[bruto_col], errors='coerce').fillna(0)
+    for col in potongan_cols:
+        df[col] = pd.to_numeric(df[col], errors='coerce').fillna(0)
+    
+    # Hitung Total Potongan per baris
+    df['Sum_Potongan'] = df[potongan_cols].sum(axis=1)
+    
+    # Ambil data relevan
+    res = df[[nip_col, bruto_col, 'Sum_Potongan']].copy()
+    res.columns = ['NIP', 'Bruto_Src', 'Potongan_Src']
+    
+    # Pastikan NIP string
+    res['NIP'] = res['NIP'].astype(str).str.strip()
+    
+    return res
+
+if master_file and source_files:
+    if st.button("Proses Data"):
+        # Baca Master
+        df_master = pd.read_excel(master_file)
+        # Pastikan NIP di master adalah string
+        df_master['NIP'] = df_master['NIP'].astype(str).str.strip()
         
-        for file in uploaded_files:
-            try:
-                # 1. Cari baris header yang berisi 'NIP'
-                df_raw = pd.read_excel(file, header=None)
-                header_row = 0
-                found_header = False
-                for i, row in df_raw.iterrows():
-                    if row.astype(str).str.contains('NIP', case=False, na=False).any():
-                        header_row = i
-                        found_header = True
-                        break
-                
-                if not found_header:
-                    st.error(f"❌ Baris NIP tidak ditemukan di file: {file.name}")
-                    continue
-
-                # 2. Baca ulang file dengan skiprows yang tepat
-                df = pd.read_excel(file, skiprows=header_row)
-                
-                # 3. Tangani Merge Cells pada Header secara eksplisit
-                df.columns = pd.Series(df.columns).ffill().str.strip()
-
-                # 4. Cari kolom NIP dan Nama secara manual satu per satu
-                col_nip = None
-                col_nama = None
-                for c in df.columns:
-                    c_upper = str(c).upper()
-                    if 'NIP' in c_upper and col_nip is None:
-                        col_nip = c
-                    if 'NAMA' in c_upper and col_nama is None:
-                        col_nama = c
-
-                if col_nip is None or col_nama is None:
-                    st.error(f"❌ Kolom NIP atau Nama tidak ditemukan di: {file.name}")
-                    continue
-
-                # 5. Buat DataFrame hasil sementara
-                df_clean = pd.DataFrame()
-                df_clean['KODE_SATKER'] = [satker] * len(df)
-                df_clean['NIP'] = df[col_nip].astype(str).str.replace(r'\D', '', regex=True)
-                df_clean['NAMA_PEGAWAI'] = df[col_nama]
-                
-                # 6. Pembersihan Nilai Keuangan (Bruto, Potongan, Bersih)
-                # Menggunakan logika penjumlahan eksplisit untuk menghindari error 'ambiguous'
-                for target, keywords in [('BRUTO', 'BRUTO'), ('POTONGAN', 'POTONGAN'), ('BERSIH', 'BERSIH')]:
-                    # Cari daftar semua kolom yang mengandung kata kunci tersebut
-                    matched_cols = [c for c in df.columns if keywords in str(c).upper()]
-                    
-                    # Inisialisasi kolom dengan angka 0.0
-                    temp_sum_series = pd.Series(0.0, index=df.index)
-                    
-                    if len(matched_cols) > 0:
-                        for m_col in matched_cols:
-                            # Terapkan pembersihan dan jumlahkan (penting jika ada banyak kolom potongan)
-                            temp_sum_series += df[m_col].apply(smart_numeric_cleaner)
-                    
-                    df_clean[target] = temp_sum_series
-
-                # 7. Filter Baris Valid (NIP >= 9 digit)
-                # Ini akan otomatis membuang baris judul, baris kosong, dan totalan
-                df_clean = df_clean[df_clean['NIP'].str.len() >= 9].copy()
-                
-                # Paksa tipe numerik sekali lagi untuk memastikan
-                for col in ['BRUTO', 'POTONGAN', 'BERSIH']:
-                    df_clean[col] = pd.to_numeric(df_clean[col], errors='coerce').fillna(0.0)
-                
-                df_clean['BULAN'] = bulan
-                df_clean['TAHUN'] = tahun
-                
-                all_data.append(df_clean)
-                st.success(f"✅ Berhasil memproses: {file.name}")
-                
-            except Exception as e:
-                st.error(f"❌ Gagal memproses {file.name}: {str(e)}")
-
-        if all_data:
-            final_df = pd.concat(all_data, ignore_index=True)
+        # Gabungkan semua data dari source_files
+        all_sources = []
+        for f in source_files:
+            processed = process_source_file(f)
+            if processed is not None:
+                all_sources.append(processed)
+        
+        if all_sources:
+            df_all_sources = pd.concat(all_sources).drop_duplicates(subset=['NIP'], keep='first')
             
-            st.divider()
-            st.subheader("📊 Pratinjau Master Pembayaran")
-            st.dataframe(final_df, use_container_width=True)
+            # Gabungkan ke Master
+            df_final = pd.merge(df_master, df_all_sources, on='NIP', how='left')
             
-            # Statistik (Sekarang aman karena kolom dipastikan float)
-            c1, c2, c3 = st.columns(3)
-            c1.metric("Total Pegawai", f"{len(final_df)} orang")
-            c2.metric("Total Nilai Bruto", f"Rp {final_df['BRUTO'].sum():,.2f}")
-            c3.metric("Total Nilai Bersih", f"Rp {final_df['BERSIH'].sum():,.2f}")
-
-            # Persiapan file unduhan
+            # Isi kolom target
+            df_final['Nilai Bruto'] = df_final['Bruto_Src'].fillna(0)
+            df_final['Nilai Potongan'] = df_final['Potongan_Src'].fillna(0)
+            df_final['Nilai Bersih'] = df_final['Nilai Bruto'] - df_final['Nilai Potongan']
+            
+            # Hapus kolom pembantu
+            df_final = df_final.drop(columns=['Bruto_Src', 'Potongan_Src'])
+            
+            st.success("Berhasil memproses data!")
+            st.dataframe(df_final.head())
+            
+            # Download Button
             output = io.BytesIO()
-            with pd.ExcelWriter(output, engine='openpyxl') as writer:
-                final_df.to_excel(writer, index=False, sheet_name='MASTER_PEMBAYARAN')
+            with pd.ExcelWriter(output, engine='xlsxwriter') as writer:
+                df_final.to_excel(writer, index=False, sheet_name='Hasil Update')
             
-            st.divider()
             st.download_button(
-                label="📥 Download MASTER PEMBAYARAN.xlsx",
+                label="📥 Unduh MASTER PEMBAYARAN Terupdate",
                 data=output.getvalue(),
-                file_name="MASTER PEMBAYARAN.xlsx",
+                file_name="MASTER_PEMBAYARAN_UPDATED.xlsx",
                 mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
             )
+        else:
+            st.error("Tidak ditemukan kolom Tunjangan atau NIP pada file sumber.")
