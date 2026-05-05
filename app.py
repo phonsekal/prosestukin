@@ -7,9 +7,9 @@ import re
 st.set_page_config(page_title="Pengolah Tukin ADK", layout="wide", page_icon="💰")
 
 st.title("💰 Penggabung Data Tukin ke Format ADK")
-st.markdown("Versi Final: Perbaikan menyeluruh pada logika deteksi kolom dan perhitungan angka.")
+st.markdown("Versi Stabil: Perbaikan deteksi kolom ganda dan logika mata uang.")
 
-# Sidebar
+# Sidebar untuk konfigurasi statis
 st.sidebar.header("⚙️ Konfigurasi Data")
 satker = st.sidebar.text_input("Kode Satker", value="693266")
 bulan = st.sidebar.text_input("Bulan (MM)", value="04")
@@ -21,7 +21,7 @@ def clean_currency(value):
     if isinstance(value, (int, float)):
         return float(value)
     try:
-        # Bersihkan format mata uang umum Indonesia
+        # Bersihkan format mata uang (Rp, spasi, titik ribuan)
         text = str(value).replace('Rp', '').replace(' ', '')
         if ',' in text and '.' in text:
             text = text.replace('.', '').replace(',', '.')
@@ -54,10 +54,10 @@ if uploaded_files:
                     st.error(f"❌ Tidak menemukan kolom NIP di file: {file.name}")
                     continue
 
-                # 2. Baca ulang file dari baris header[cite: 1, 2]
+                # 2. Baca ulang file dari baris header yang ditemukan
                 df = pd.read_excel(file, skiprows=header_row)
                 
-                # 3. Tangani Merge Cells pada Header (Penting untuk file Rekapitulasi)
+                # 3. Tangani Merge Cells pada Header menggunakan .ffill()
                 df.columns = pd.Series(df.columns).ffill().str.strip()
 
                 # 4. Cari kolom NIP dan Nama secara spesifik
@@ -82,20 +82,19 @@ if uploaded_files:
                 
                 # Penanganan Kolom Keuangan (Bruto, Potongan, Bersih)
                 for target, keywords in [('BRUTO', 'BRUTO'), ('POTONGAN', 'POTONGAN'), ('BERSIH', 'BERSIH')]:
-                    # Cari kolom yang mengandung kata kunci
+                    # Cari semua kolom yang mengandung kata kunci (untuk menangani kolom ganda)
                     matched_cols = [c for c in df.columns if keywords in str(c).upper()]
                     
                     if len(matched_cols) > 0:
-                        # Inisialisasi sebagai angka nol
+                        # Inisialisasi Series nol untuk menampung hasil penjumlahan
                         temp_series = pd.Series(0.0, index=df.index)
                         for m_col in matched_cols:
-                            # Bersihkan dan jumlahkan otomatis (menangani kolom potongan yang terbagi-bagi)
                             temp_series += df[m_col].apply(clean_currency)
                         df_clean[target] = temp_series
                     else:
                         df_clean[target] = 0.0
 
-                # 6. Validasi Baris: Hanya ambil yang NIP-nya valid (min 9 digit)[cite: 1]
+                # 6. Validasi Baris: Ambil hanya yang memiliki NIP valid (min 9 digit)[cite: 1, 2]
                 df_clean = df_clean[df_clean['NIP'].str.len() >= 9].copy()
                 
                 df_clean['BULAN'] = bulan
@@ -113,13 +112,13 @@ if uploaded_files:
             st.subheader("📊 Preview Data Gabungan")
             st.dataframe(final_df, use_container_width=True)
             
-            # Tampilkan statistik akhir dengan penjumlahan yang sudah bersih
+            # Statistik Akhir
             c1, c2, c3 = st.columns(3)
             c1.metric("Total Pegawai", f"{len(final_df)} orang")
             c2.metric("Total Bruto", f"Rp {final_df['BRUTO'].sum():,.2f}")
             c3.metric("Total Bersih", f"Rp {final_df['BERSIH'].sum():,.2f}")
 
-            # Persiapkan file untuk didownload
+            # Persiapkan Download
             output = io.BytesIO()
             with pd.ExcelWriter(output, engine='openpyxl') as writer:
                 final_df.to_excel(writer, index=False, sheet_name='ADK_GABUNGAN')
