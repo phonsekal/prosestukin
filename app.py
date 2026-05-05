@@ -7,7 +7,7 @@ import re
 st.set_page_config(page_title="Pengolah Tukin ADK", layout="wide", page_icon="💰")
 
 st.title("💰 Penggabung Data Tukin ke Format ADK")
-st.markdown("Versi Perbaikan: Penanganan duplikasi kolom Potongan dan pembersihan angka.")
+st.markdown("Versi Stabil: Perbaikan logika deteksi kolom dan penjumlahan otomatis.")
 
 # Sidebar
 st.sidebar.header("⚙️ Konfigurasi Data")
@@ -39,26 +39,37 @@ if uploaded_files:
         
         for file in uploaded_files:
             try:
-                # 1. Cari baris header NIP
+                # 1. Cari baris header NIP[cite: 1]
                 df_raw = pd.read_excel(file, header=None)
                 header_row = 0
+                found_header = False
                 for i, row in df_raw.iterrows():
                     if row.astype(str).str.contains('NIP', case=False, na=False).any():
                         header_row = i
+                        found_header = True
                         break
                 
-                # 2. Baca ulang file
+                if not found_header:
+                    st.error(f"❌ Tidak menemukan kolom NIP di file: {file.name}")
+                    continue
+
+                # 2. Baca ulang file[cite: 2]
                 df = pd.read_excel(file, skiprows=header_row)
                 
                 # 3. Tangani Merge Cells Header
                 df.columns = pd.Series(df.columns).ffill().str.strip()
 
-                # 4. Cari kolom NIP dan Nama secara fleksibel
-                col_nip = next((c for c in df.columns if 'NIP' in str(c).upper()), None)
-                col_nama = next((c for c in df.columns if 'NAMA' in str(c).upper()), None)
+                # 4. Cari kolom NIP dan Nama secara eksplisit
+                col_nip = None
+                col_nama = None
+                for c in df.columns:
+                    if 'NIP' in str(c).upper():
+                        col_nip = c
+                    if 'NAMA' in str(c).upper() and col_nama is None: # Ambil yang pertama ketemu
+                        col_nama = c
 
-                if not col_nip or not col_nama:
-                    st.error(f"❌ Kolom NIP/Nama tidak ditemukan di: {file.name}")
+                if col_nip is None or col_nama is None:
+                    st.error(f"❌ Kolom NIP atau Nama tidak terbaca di: {file.name}")
                     continue
 
                 # 5. Ekstraksi Data
@@ -67,31 +78,32 @@ if uploaded_files:
                 df_clean['NIP'] = df[col_nip].astype(str).str.replace(r'\D', '', regex=True)
                 df_clean['NAMA_PEGAWAI'] = df[col_nama]
                 
-                # --- PERBAIKAN UTAMA: Penanganan Multiple Columns ---
-                # Cari semua kolom yang mengandung kata kunci
-                for target, keywords in [('BRUTO', 'Bruto'), ('POTONGAN', 'Potongan'), ('BERSIH', 'Bersih')]:
-                    found_cols = [c for c in df.columns if keywords.upper() in str(c).upper()]
+                # Penanganan Kolom Keuangan (Bruto, Potongan, Bersih)[cite: 2]
+                for target, keywords in [('BRUTO', 'BRUTO'), ('POTONGAN', 'POTONGAN'), ('BERSIH', 'BERSIH')]:
+                    # Cari semua kolom yang mengandung kata kunci (Case Insensitive)
+                    matched_cols = [c for c in df.columns if keywords in str(c).upper()]
                     
-                    if found_cols:
-                        # Jika ada lebih dari satu kolom (misal: Potongan Pph, Potongan Absen), jumlahkan semua
-                        temp_df = df[found_cols].copy()
-                        for col in temp_df.columns:
-                            temp_df[col] = temp_df[col].apply(clean_currency)
-                        df_clean[target] = temp_df.sum(axis=1)
+                    if len(matched_cols) > 0:
+                        # Jika ada banyak kolom potongan, jumlahkan semuanya per baris
+                        temp_sum = pd.Series(0.0, index=df.index)
+                        for m_col in matched_cols:
+                            temp_sum += df[m_col].apply(clean_currency)
+                        df_clean[target] = temp_sum
                     else:
                         df_clean[target] = 0.0
 
-                # 6. Validasi NIP (minimal 9 digit)
-                df_clean = df_clean[df_clean['NIP'].str.len() >= 9]
+                # 6. Validasi Baris Data[cite: 1]
+                # Hanya ambil baris yang NIP-nya berisi angka minimal 9 digit
+                df_clean = df_clean[df_clean['NIP'].str.len() >= 9].copy()
                 
                 df_clean['BULAN'] = bulan
                 df_clean['TAHUN'] = tahun
                 
                 all_data.append(df_clean)
-                st.success(f"✅ Berhasil: {file.name}")
+                st.success(f"✅ Berhasil memproses: {file.name}")
                 
             except Exception as e:
-                st.error(f"❌ Error {file.name}: {str(e)}")
+                st.error(f"❌ Error pada {file.name}: {str(e)}")
 
         if all_data:
             final_df = pd.concat(all_data, ignore_index=True)
@@ -99,11 +111,13 @@ if uploaded_files:
             st.subheader("📊 Preview Data Gabungan")
             st.dataframe(final_df, use_container_width=True)
             
+            # Tampilkan Total (Sekarang aman dari ambiguitas)
             c1, c2, c3 = st.columns(3)
             c1.metric("Total Pegawai", f"{len(final_df)} orang")
             c2.metric("Total Bruto", f"Rp {final_df['BRUTO'].sum():,.2f}")
             c3.metric("Total Bersih", f"Rp {final_df['BERSIH'].sum():,.2f}")
 
+            # Persiapkan file Excel
             output = io.BytesIO()
             with pd.ExcelWriter(output, engine='openpyxl') as writer:
                 final_df.to_excel(writer, index=False, sheet_name='ADK_GABUNGAN')
