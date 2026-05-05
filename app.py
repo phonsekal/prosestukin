@@ -7,12 +7,14 @@ import io
 st.set_page_config(page_title="Update Master Pembayaran", layout="wide")
 
 st.title("📂 Pengolah Data Master Pembayaran")
-st.write("Unggah semua file sekaligus (Master & File Tukin).")
+st.write("Gunakan aplikasi ini untuk sinkronisasi data Tukin ke Master Pembayaran.")
 
 # --- FUNGSI PEMROSESAN FILE SUMBER ---
 def process_source_file(file):
     try:
-        df_raw = pd.read_excel(file, header=None)
+        # Baca dengan dtype=str untuk mencegah pembulatan NIP (mencegah 000 di belakang)
+        df_raw = pd.read_excel(file, header=None, dtype=str)
+        
         header_row_idx = None
         for i, row in df_raw.iterrows():
             if "NIP" in row.values:
@@ -22,9 +24,10 @@ def process_source_file(file):
         if header_row_idx is None:
             return None
         
-        df = pd.read_excel(file, skiprows=header_row_idx)
+        # Baca ulang dengan header yang benar, tetap paksa dtype=str
+        df = pd.read_excel(file, skiprows=header_row_idx, dtype=str)
         
-        # Buat nama kolom unik agar tidak Error
+        # Buat nama kolom unik
         new_cols = []
         counts = {}
         for col in df.columns:
@@ -46,18 +49,18 @@ def process_source_file(file):
         if not bruto_col:
             return None
 
+        # Konversi Nilai ke Numeric secara aman
         def safe_to_numeric(series):
             if isinstance(series, pd.DataFrame):
                 series = series.iloc[:, 0]
             return pd.to_numeric(series, errors='coerce').fillna(0)
 
-        # Hitung Nilai
         bruto_values = safe_to_numeric(df[bruto_col])
         total_potongan_values = np.zeros(len(df))
         for p_col in potongan_cols:
             total_potongan_values += safe_to_numeric(df[p_col]).values
         
-        # Bersihkan NIP Sumber secara total
+        # Bersihkan NIP (Hapus .0 dan spasi)
         source_nip = df[nip_col].astype(str).str.replace(r'\.0$', '', regex=True).str.strip()
         
         res = pd.DataFrame({
@@ -65,6 +68,9 @@ def process_source_file(file):
             'VAL_BRUTO': bruto_values,
             'VAL_POTONGAN': total_potongan_values
         })
+        
+        # Hapus baris yang NIP-nya kosong
+        res = res[res['KEY_NIP'] != 'nan']
         
         return res
 
@@ -99,19 +105,19 @@ if uploaded_files:
             st.error("Tidak ada data valid dari file sumber.")
         else:
             try:
-                # 1. Baca Master
-                df_master = pd.read_excel(master_file_obj)
+                # 1. Baca Master - PAKSA NIP JADI STRING
+                df_master = pd.read_excel(master_file_obj, dtype=str)
                 
-                # Cari kolom NIP di master (simpan nama aslinya)
+                # Cari kolom NIP di master
                 master_nip_col_name = [c for c in df_master.columns if 'NIP' in c][0]
                 
-                # Buat kolom kunci sementara untuk merging agar NIP asli tidak hilang/berubah
+                # Buat kunci pencocokan yang bersih
                 df_master['KUNCI_MATCH'] = df_master[master_nip_col_name].astype(str).str.replace(r'\.0$', '', regex=True).str.strip()
 
-                # 2. Gabungkan Semua Sumber
+                # 2. Gabungkan Semua Sumber (Drop duplicates agar tidak double count)
                 df_all_sources = pd.concat(source_datasets).drop_duplicates(subset=['KEY_NIP'], keep='first')
 
-                # 3. Merge menggunakan KUNCI_MATCH
+                # 3. Merge (VLOOKUP)
                 df_final = pd.merge(
                     df_master, 
                     df_all_sources, 
@@ -120,27 +126,44 @@ if uploaded_files:
                     how='left'
                 )
 
-                # 4. Isi Kolom Target (Pastikan nama kolom sesuai dengan file Master Anda)
-                # Jika kolom sudah ada di master, kita update. Jika belum, kita buat baru.
+                # 4. Update Nilai (Gunakan fillna(0) agar tidak NaN)
+                # Kita pastikan kolom target terisi nilai dari file sumber
                 df_final['Nilai Bruto'] = df_final['VAL_BRUTO'].fillna(0)
                 df_final['Nilai Potongan'] = df_final['VAL_POTONGAN'].fillna(0)
+                
+                # Pastikan tipe data numeric sebelum pengurangan
+                df_final['Nilai Bruto'] = pd.to_numeric(df_final['Nilai Bruto'], errors='coerce').fillna(0)
+                df_final['Nilai Potongan'] = pd.to_numeric(df_final['Nilai Potongan'], errors='coerce').fillna(0)
                 df_final['Nilai Bersih'] = df_final['Nilai Bruto'] - df_final['Nilai Potongan']
 
-                # 5. BERSIHKAN: Hapus kolom pembantu saja, jangan hapus NIP asli
+                # 5. BERSIHKAN Kolom Tambahan
                 cols_to_drop = ['KUNCI_MATCH', 'KEY_NIP', 'VAL_BRUTO', 'VAL_POTONGAN']
                 df_final = df_final.drop(columns=[c for c in cols_to_drop if c in df_final.columns])
 
-                st.success("Berhasil Update!")
-                st.subheader("Preview Hasil:")
+                st.success("Berhasil Sinkronisasi!")
                 st.dataframe(df_final.head(10))
 
-                # 6. Export ke Excel
+                # 6. EXPORT DENGAN ENGINE XLSXWRITER UNTUK MEMPERTAHANKAN STRING
                 output = io.BytesIO()
+                # Gunakan engine xlsxwriter
                 with pd.ExcelWriter(output, engine='xlsxwriter') as writer:
                     df_final.to_excel(writer, index=False, sheet_name='Update_Tukin')
-                
+                    
+                    # Akses objek xlsxwriter untuk memformat kolom NIP sebagai teks
+                    workbook  = writer.book
+                    worksheet = writer.sheets['Update_Tukin']
+                    
+                    # Format teks agar NIP tidak berubah jadi 000
+                    text_format = workbook.add_format({'num_format': '@'})
+                    
+                    # Cari indeks kolom NIP untuk diformat
+                    for i, col in enumerate(df_final.columns):
+                        if 'NIP' in col.upper():
+                            # Format kolom tersebut (baris 1 sampai akhir)
+                            worksheet.set_column(i, i, None, text_format)
+
                 st.download_button(
-                    label="📥 Unduh MASTER_PEMBAYARAN_TERUPDATE.xlsx",
+                    label="📥 Unduh Hasil Akhir (Presisi NIP Terjaga)",
                     data=output.getvalue(),
                     file_name="MASTER_PEMBAYARAN_TERUPDATE.xlsx",
                     mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
