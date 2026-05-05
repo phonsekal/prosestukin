@@ -4,15 +4,15 @@ import numpy as np
 import io
 
 # Konfigurasi Halaman
-st.set_page_config(page_title="Pengolah Tukin Otomatis", layout="wide")
+st.set_page_config(page_title="Update Master Pembayaran", layout="wide")
 
 st.title("📂 Pengolah Data Master Pembayaran")
-st.write("Unggah semua file sekaligus (Master & File Tukin). Sistem akan otomatis mengenali file Master.")
+st.write("Unggah semua file sekaligus. Sistem akan mendeteksi 'MASTER PEMBAYARAN.xlsx' secara otomatis.")
 
-# --- FUNGSI PEMROSESAN FILE SUMBER (TUKIN) ---
+# --- FUNGSI PEMROSESAN FILE SUMBER ---
 def process_source_file(file):
     try:
-        # 1. Baca mentah untuk cari baris header (NIP)
+        # 1. Cari baris header (NIP)
         df_raw = pd.read_excel(file, header=None)
         header_row_idx = None
         for i, row in df_raw.iterrows():
@@ -23,128 +23,131 @@ def process_source_file(file):
         if header_row_idx is None:
             return None
         
-        # 2. Baca ulang dengan header yang benar
+        # 2. Baca ulang dengan header benar
         df = pd.read_excel(file, skiprows=header_row_idx)
         
-        # 3. Paksa nama kolom unik (Mencegah TypeError: arg must be a list...)
-        # Jika ada dua kolom 'Potongan', akan menjadi 'Potongan', 'Potongan.1'
+        # 3. Paksa semua nama kolom menjadi unik dan bersih
+        # Menggunakan list comprehension untuk menangani duplikat sebelum kolom ditetapkan
         new_cols = []
         counts = {}
         for col in df.columns:
-            clean_col = str(col).replace('\n', ' ').strip()
-            if clean_col in counts:
-                counts[clean_col] += 1
-                new_cols.append(f"{clean_col}.{counts[clean_col]}")
+            c = str(col).replace('\n', ' ').strip()
+            if c in counts:
+                counts[c] += 1
+                new_cols.append(f"{c}_dup_{counts[c]}")
             else:
-                counts[clean_col] = 0
-                new_cols.append(clean_col)
+                counts[c] = 0
+                new_cols.append(c)
         df.columns = new_cols
 
-        # 4. Cari Kolom Penting
+        # 4. Identifikasi Nama Kolom
         nip_col = [c for c in df.columns if 'NIP' in c][0]
         tunjangan_cols = [c for c in df.columns if 'Tunjangan' in c]
         bruto_col = tunjangan_cols[0] if tunjangan_cols else None
-        
-        # Ambil semua kolom yang mengandung kata 'Potongan'
         potongan_cols = [c for c in df.columns if 'Potongan' in c and 'Total' not in c]
-        
+
         if not bruto_col:
             return None
 
-        # 5. Konversi ke Numerik & Kalkulasi
-        # Kita gunakan .iloc untuk memastikan kita memproses Series tunggal
-        df[bruto_col] = pd.to_numeric(df[bruto_col], errors='coerce').fillna(0)
+        # 5. Konversi Numerik (MENGGUNAKAN CARA PALING AMAN)
+        # Kita ambil series secara eksplisit untuk menghindari DataFrame duplikat
+        def safe_to_numeric(series):
+            # Jika series ternyata masih dataframe (akibat duplikasi pandas yang sangat bandel)
+            if isinstance(series, pd.DataFrame):
+                series = series.iloc[:, 0]
+            return pd.to_numeric(series, errors='coerce').fillna(0)
+
+        # Hitung Bruto
+        bruto_values = safe_to_numeric(df[bruto_col])
         
-        # Jumlahkan potongan secara manual per baris
-        total_potongan_series = pd.Series(0, index=df.index)
-        for col in potongan_cols:
-            total_potongan_series += pd.to_numeric(df[col], errors='coerce').fillna(0)
+        # Hitung Total Potongan
+        total_potongan_values = np.zeros(len(df))
+        for p_col in potongan_cols:
+            total_potongan_values += safe_to_numeric(df[p_col]).values
         
-        df['Final_Potongan'] = total_potongan_series
-        
-        # 6. Bersihkan NIP (Hapus .0)
-        df[nip_col] = df[nip_col].astype(str).str.replace(r'\.0$', '', regex=True).str.strip()
-        
-        # Ambil hasil
-        res = df[[nip_col, bruto_col, 'Final_Potongan']].copy()
-        res.columns = ['NIP', 'Bruto_Src', 'Potongan_Src']
+        # 6. Bangun DataFrame Hasil
+        res = pd.DataFrame({
+            'NIP': df[nip_col].astype(str).str.replace(r'\.0$', '', regex=True).str.strip(),
+            'Bruto_Src': bruto_values,
+            'Potongan_Src': total_potongan_values
+        })
         
         return res
+
     except Exception as e:
-        st.error(f"Gagal memproses {file.name}: {e}")
+        st.error(f"⚠️ Gagal memproses {file.name}: {e}")
         return None
 
-# --- ANTARMUKA UNGGAH TUNGGAL ---
+# --- UI UNGGAH ---
 uploaded_files = st.file_uploader(
-    "Unggah semua file Excel di sini (Termasuk MASTER PEMBAYARAN.xlsx)", 
+    "Unggah File Master & File Tukin (Bisa sekaligus banyak)", 
     type=["xlsx"], 
     accept_multiple_files=True
 )
 
 if uploaded_files:
-    master_data = None
+    master_file_obj = None
     source_datasets = []
-    
-    # Pisahkan Master dan Source berdasarkan nama file
+
+    # Filter Master vs Sumber
     for f in uploaded_files:
         if "MASTER PEMBAYARAN" in f.name.upper():
-            master_data = f
+            master_file_obj = f
         else:
             processed = process_source_file(f)
             if processed is not None:
                 source_datasets.append(processed)
-                st.info(f"✅ File sumber terbaca: {f.name}")
-            else:
-                st.warning(f"⚠️ File diabaikan (NIP/Tunjangan tidak ketemu): {f.name}")
+                st.info(f"✅ Berhasil membaca: {f.name}")
 
-    if st.button("🚀 Proses & Gabungkan Data"):
-        if master_data is None:
-            st.error("File 'MASTER PEMBAYARAN.xlsx' tidak ditemukan dalam daftar unggahan!")
+    if st.button("🚀 Jalankan Update Master"):
+        if master_file_obj is None:
+            st.error("File 'MASTER PEMBAYARAN.xlsx' tidak ditemukan!")
         elif not source_datasets:
-            st.error("Tidak ada file sumber (Tukin) yang valid untuk diproses.")
+            st.error("Tidak ada data valid dari file sumber untuk digabungkan.")
         else:
             try:
                 # 1. Baca Master
-                df_master = pd.read_excel(master_data)
-                # Normalisasi NIP Master
-                nip_master_col = [c for c in df_master.columns if 'NIP' in c]
-                if not nip_master_col:
-                    st.error("Kolom 'NIP' tidak ada di file Master!")
+                df_master = pd.read_excel(master_file_obj)
+                
+                # Cari kolom NIP di master
+                master_nip_col = [c for c in df_master.columns if 'NIP' in c]
+                if not master_nip_col:
+                    st.error("Kolom 'NIP' tidak ditemukan di Master!")
                     st.stop()
                 
-                target_nip = nip_master_col[0]
-                df_master[target_nip] = df_master[target_nip].astype(str).str.replace(r'\.0$', '', regex=True).str.strip()
-                
-                # 2. Gabungkan semua sumber
+                m_nip = master_nip_col[0]
+                df_master[m_nip] = df_master[m_nip].astype(str).str.replace(r'\.0$', '', regex=True).str.strip()
+
+                # 2. Gabungkan Semua Sumber
                 df_all_sources = pd.concat(source_datasets).drop_duplicates(subset=['NIP'], keep='first')
-                
-                # 3. Merge (VLOOKUP ala Python)
-                df_final = pd.merge(df_master, df_all_sources, left_on=target_nip, right_on='NIP', how='left')
-                
-                # 4. Isi kolom yang diminta
-                # Gunakan .fillna(0) agar tidak ada error saat pengurangan
+
+                # 3. Gabungkan (Merge)
+                df_final = pd.merge(df_master, df_all_sources, left_on=m_nip, right_on='NIP', how='left')
+
+                # 4. Update Kolom Target
+                # Pastikan kolom target ada, jika tidak, akan dibuat otomatis
                 df_final['Nilai Bruto'] = df_final['Bruto_Src'].fillna(0)
                 df_final['Nilai Potongan'] = df_final['Potongan_Src'].fillna(0)
                 df_final['Nilai Bersih'] = df_final['Nilai Bruto'] - df_final['Nilai Potongan']
-                
-                # Hapus kolom sementara
+
+                # Bersihkan kolom temporary
                 cols_to_drop = ['NIP', 'Bruto_Src', 'Potongan_Src']
                 df_final = df_final.drop(columns=[c for c in cols_to_drop if c in df_final.columns])
-                
-                st.success("Berhasil! Data telah diperbarui.")
+
+                st.success("Proses Berhasil!")
                 st.dataframe(df_final.head(10))
-                
-                # 5. Download
+
+                # 5. Export
                 output = io.BytesIO()
                 with pd.ExcelWriter(output, engine='xlsxwriter') as writer:
-                    df_final.to_excel(writer, index=False, sheet_name='Update_Tukin')
+                    df_final.to_excel(writer, index=False, sheet_name='Update_Master')
                 
                 st.download_button(
-                    label="📥 Unduh Hasil Akhir",
+                    label="📥 Unduh MASTER_PEMBAYARAN_UPDATED.xlsx",
                     data=output.getvalue(),
-                    file_name="HASIL_MASTER_PEMBAYARAN_UPDATED.xlsx",
+                    file_name="MASTER_PEMBAYARAN_UPDATED.xlsx",
                     mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
                 )
-                
+
             except Exception as e:
-                st.error(f"Terjadi kesalahan saat penggabungan: {e}")
+                st.error(f"Terjadi error saat penggabungan: {e}")
