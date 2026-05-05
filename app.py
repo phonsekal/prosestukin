@@ -159,7 +159,7 @@ if uploaded_files:
                 df_final = df_final.drop(columns=[c for c in to_drop if c in df_final.columns])
 
                 st.success("Proses Data Selesai!")
-                st.dataframe(df_final.head(10))
+                # st.dataframe(df_final.head(10))
 
                 # 6. Export dengan Proteksi NIP
                 output = io.BytesIO()
