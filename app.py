@@ -118,7 +118,7 @@ if uploaded_files:
                 source_datasets.append(processed)
                 st.info(f"✅ Berhasil Ekstrak {len(processed)} data dari: {f.name}")
 
-    if st.button("🚀 Jalankan Sinkronisasi"):
+    if st.button("🚀 Proses Data"):
         if master_file_obj is None:
             st.error("File 'MASTER PEMBAYARAN.xlsx' belum diunggah!")
         elif not source_datasets:
@@ -158,7 +158,7 @@ if uploaded_files:
                 to_drop = ['MATCH_KEY', 'KEY_NIP', 'VAL_BRUTO', 'VAL_BERSIH', 'VAL_POTONGAN']
                 df_final = df_final.drop(columns=[c for c in to_drop if c in df_final.columns])
 
-                st.success("Sinkronisasi Selesai!")
+                st.success("Proses Data Selesai!")
                 st.dataframe(df_final.head(10))
 
                 # 6. Export dengan Proteksi NIP
