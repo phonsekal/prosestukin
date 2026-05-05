@@ -5,10 +5,10 @@ import io
 import re
 
 # Konfigurasi Halaman
-st.set_page_config(page_title="Update Master Pembayaran", layout="wide")
+st.set_page_config(page_title="Gabugn File Tukin", layout="wide")
 
-st.title("📂 Pengolah Data Master Pembayaran")
-st.write("Sinkronisasi cerdas: Mencari data berdasarkan nama kolom dan posisi relatif.")
+st.title("📂 Gabung File Tukin")
+st.write("Proses penggabungan data tunjangan kinerja pegawai")
 
 # --- FUNGSI MEMBERSIHKAN ANGKA ---
 def clean_numeric(value):
